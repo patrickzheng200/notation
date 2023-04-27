@@ -162,10 +162,6 @@ func generateSelfSignedCert(privateKey *rsa.PrivateKey, name string) (testhelper
 }
 
 func generateTestCleanUp(keyName string) error {
-	err := truststore.DeleteCert("ca", keyName, keyName, true)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: cannot delete certificate from truststore/ca/%s/%s during generate-test clean up, %v", keyName, keyName, err)
-	}
 	return config.LoadExecSaveSigningKeys(func(keys *config.SigningKeys) error {
 		keySuite, err := keys.Get(keyName)
 		if err != nil {
@@ -174,7 +170,47 @@ func generateTestCleanUp(keyName string) error {
 		if keySuite.ExternalKey != nil {
 			return errors.New("generate-test clean up can only apply to non-external keys")
 		}
+		if keySuite.X509KeyPair == nil {
+			return errors.New("generate-test clean up requires key pair files")
+		}
+		// delete the certificate from trust store
+		certFile := keyName + dir.LocalCertificateExtension
+		var finalError []error
+		err = truststore.DeleteCert("ca", keyName, certFile, true)
+		if err != nil {
+			finalError = append(finalError, fmt.Errorf("cannot delete certificate from truststore/ca/%s/%s during generate-test clean up, %v", keyName, certFile, err))
+		}
+		// delete the key file from keyPath
+		keyPath := keySuite.X509KeyPair.KeyPath
+		err = osutil.DeleteFile(keyPath)
+		if err != nil {
+			finalError = append(finalError, fmt.Errorf("cannot delete the key file from %q during generate-test clean up, %v", keyPath, err))
+		} else {
+			fmt.Printf("Successfully deleted the key file from %q\n", keyPath)
+		}
+		// delete the certificate file from certPath
+		certPath := keySuite.X509KeyPair.CertificatePath
+		err = osutil.DeleteFile(certPath)
+		if err != nil {
+			finalError = append(finalError, fmt.Errorf("cannot delete the certificate file from %q during generate-test clean up, %v", certPath, err))
+		} else {
+			fmt.Printf("Successfully deleted the certificate file from %q\n", certPath)
+		}
+		// remove the key from Notation's signing key list
+		_, err = keys.Remove(keyName)
+		if err != nil {
+			finalError = append(finalError, fmt.Errorf("cannot remove %q from notation signing key list during generate-test clean up, %v", keyName, err))
+		} else {
+			fmt.Printf("Successfully removed %q from notation signing key list\n", keyName)
+		}
 
+		// check if there is any error in the process of deletions
+		if len(finalError) > 0 {
+			for _, err := range finalError {
+				fmt.Fprintf(os.Stderr, "Error: %v", err)
+			}
+			return errors.New("failed to complete the generate-test clean up, manual deletion may be needed")
+		}
 		return nil
 	})
 }
